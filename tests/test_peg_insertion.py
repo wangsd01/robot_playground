@@ -150,3 +150,38 @@ def test_forward_phase6_targets_hole_insert_z():
     assert position[2] == pytest.approx(0.128)
     assert position[0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0])
     assert position[1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1])
+
+
+# ── reset() tests ─────────────────────────────────────────────────────────────
+
+def test_reset_clears_event_and_step():
+    s = _make_scenario()
+    s._event = 5
+    s._step = 30
+    s.reset()
+    assert s._event == 0
+    assert s._step == 0
+
+
+def test_reset_clears_cached_heights():
+    s = _make_scenario()
+    s._peg_grasp_z = 0.098
+    s._hole_insert_z = 0.128
+    s.reset()
+    assert s._peg_grasp_z is None
+    assert s._hole_insert_z is None
+
+
+def test_reset_calls_robot_reset_to_default_pose():
+    s = _make_scenario()
+    s.reset()
+    s.robot.reset_to_default_pose.assert_called_once()
+
+
+def test_reset_teleports_peg_to_initial_position():
+    s = _make_scenario()
+    s.reset()
+    s.peg.set_world_poses.assert_called_once()
+    kwargs = s.peg.set_world_poses.call_args.kwargs
+    np.testing.assert_array_almost_equal(kwargs["positions"][0], [0.4, 0.0, 0.04])
+    np.testing.assert_array_almost_equal(kwargs["orientations"][0], [1.0, 0.0, 0.0, 0.0])

@@ -158,7 +158,15 @@ class FrankaPegInsertion:
         return not self.is_done()
 
     def reset(self) -> None:
-        raise NotImplementedError
+        self._event = 0
+        self._step = 0
+        self._peg_grasp_z = None
+        self._hole_insert_z = None
+        self.robot.reset_to_default_pose()
+        self.peg.set_world_poses(
+            positions=self.PEG_INITIAL_POSITION[np.newaxis],
+            orientations=self.PEG_INITIAL_ORIENTATION[np.newaxis],
+        )
 
 
 def main() -> None:
