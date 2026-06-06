@@ -57,7 +57,37 @@ class FrankaPegInsertion:
         return self._event >= len(self.EVENTS_DT)
 
     def setup_scene(self) -> None:
-        raise NotImplementedError
+        import isaacsim.core.experimental.utils.app as app_utils
+        app_utils.enable_extension("isaacsim.robot.experimental.manipulators.examples")
+
+        from isaacsim.core.experimental.objects import Cube, DomeLight, GroundPlane
+        from isaacsim.core.experimental.prims import GeomPrim, RigidPrim
+        from isaacsim.robot.experimental.manipulators.examples.franka.franka import Franka
+
+        GroundPlane("/World/ground_plane")
+        DomeLight("/World/DomeLight").set_intensities(1000)
+
+        self.robot = Franka(robot_path=self.ROBOT_PATH, create_robot=True)
+
+        peg_cube = Cube(
+            paths=self.PEG_PATH,
+            positions=self.PEG_INITIAL_POSITION,
+            orientations=self.PEG_INITIAL_ORIENTATION,
+            sizes=1.0,
+            scales=np.array([0.03, 0.03, 0.08]),
+            colors="red",
+        )
+        GeomPrim(paths=peg_cube.paths, apply_collision_apis=True)
+        self.peg = RigidPrim(paths=peg_cube.paths)
+
+        Cube(
+            paths=self.HOLE_FIXTURE_PATH,
+            positions=np.array([-0.1, 0.35, 0.025]),
+            orientations=np.array([1.0, 0.0, 0.0, 0.0]),
+            sizes=1.0,
+            scales=np.array([0.12, 0.12, 0.05]),
+            colors="gray",
+        )
 
     def forward(self, ik_method: str = "damped-least-squares") -> bool:
         raise NotImplementedError
