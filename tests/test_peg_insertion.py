@@ -10,20 +10,21 @@ from peg_insertion import (
     check_success,
     _PEG_HEIGHT,
     _HOLE_TOP_Z,
-    _GRIPPER_HEIGHT_OFFSET,
-    _INSERTION_DEPTH,
+    _GRASP_CLEARANCE_ABOVE_PEG_TOP,
+    _PLACEMENT_HEIGHT_ABOVE_HOLE_TOP,
 )
 
 
 # ── Pure math ─────────────────────────────────────────────────────────────────
 
 def test_compute_peg_grasp_z():
-    assert compute_peg_grasp_z(0.04) == pytest.approx(0.04 + _GRIPPER_HEIGHT_OFFSET)
+    expected = 0.04 + _PEG_HEIGHT / 2 + _GRASP_CLEARANCE_ABOVE_PEG_TOP
+    assert compute_peg_grasp_z(0.04) == pytest.approx(expected)
 
 
 def test_compute_hole_insert_z():
-    expected = _HOLE_TOP_Z - _INSERTION_DEPTH + _GRIPPER_HEIGHT_OFFSET + _PEG_HEIGHT / 2
-    assert compute_hole_insert_z() == pytest.approx(expected)   # 0.128
+    expected = _HOLE_TOP_Z + _PLACEMENT_HEIGHT_ABOVE_HOLE_TOP
+    assert compute_hole_insert_z() == pytest.approx(expected)   # 0.16
 
 
 def test_check_success_pass():
@@ -113,10 +114,8 @@ def test_forward_phase1_caches_heights_on_first_step():
     s._event = 1
     s._step = 0
     s.forward()
-    assert s._peg_grasp_z == pytest.approx(0.04 + _GRIPPER_HEIGHT_OFFSET)
-    assert s._hole_insert_z == pytest.approx(
-        _HOLE_TOP_Z - _INSERTION_DEPTH + _GRIPPER_HEIGHT_OFFSET + _PEG_HEIGHT / 2
-    )
+    assert s._peg_grasp_z == pytest.approx(0.04 + _PEG_HEIGHT / 2 + _GRASP_CLEARANCE_ABOVE_PEG_TOP)
+    assert s._hole_insert_z == pytest.approx(_HOLE_TOP_Z + _PLACEMENT_HEIGHT_ABOVE_HOLE_TOP)
 
 
 def test_forward_phase3_calls_close_gripper():

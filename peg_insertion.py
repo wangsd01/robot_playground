@@ -3,20 +3,20 @@ from __future__ import annotations
 import numpy as np
 
 # ── Physical constants ────────────────────────────────────────────────────────
-_PEG_HEIGHT = 0.08            # total peg height (m)
-_GRIPPER_HEIGHT_OFFSET = 0.058  # panda_hand frame → finger grip point (m)
-_HOLE_TOP_Z = 0.05            # z of hole fixture top face (m)
-_INSERTION_DEPTH = 0.02       # how far peg bottom enters below hole top (m)
+_PEG_HEIGHT = 0.08                  # total peg height (m)
+_GRASP_CLEARANCE_ABOVE_PEG_TOP = 0.04
+_HOLE_TOP_Z = 0.05                  # z of hole fixture top face (m)
+_PLACEMENT_HEIGHT_ABOVE_HOLE_TOP = 0.11
 
 
 def compute_peg_grasp_z(peg_center_z: float) -> float:
-    """EE z-target so fingers align with peg center."""
-    return peg_center_z + _GRIPPER_HEIGHT_OFFSET
+    """EE z-target for grasping with the hand frame above the peg top."""
+    return peg_center_z + _PEG_HEIGHT / 2 + _GRASP_CLEARANCE_ABOVE_PEG_TOP
 
 
 def compute_hole_insert_z() -> float:
-    """EE z-target so peg bottom is INSERTION_DEPTH below hole top face."""
-    return _HOLE_TOP_Z - _INSERTION_DEPTH + _GRIPPER_HEIGHT_OFFSET + _PEG_HEIGHT / 2
+    """EE z-target for the lowered placement pose above the hole center."""
+    return _HOLE_TOP_Z + _PLACEMENT_HEIGHT_ABOVE_HOLE_TOP
 
 
 def check_success(peg_pos: np.ndarray, hole_pos: np.ndarray) -> bool:
@@ -170,7 +170,39 @@ class FrankaPegInsertion:
 
 
 def main() -> None:
-    raise NotImplementedError
+    from isaacsim.simulation_app import SimulationApp
+    simulation_app = SimulationApp({"headless": False})
+
+    import omni.timeline
+    from isaacsim.core.simulation_manager import SimulationManager
+
+    scenario = FrankaPegInsertion()
+    scenario.setup_scene()
+
+    timeline = omni.timeline.get_timeline_interface()
+    timeline.play()
+
+    for _ in range(10):
+        SimulationManager.step(steps=1)
+        simulation_app.update()
+
+    scenario.reset()
+
+    while simulation_app.is_running() and scenario.forward():
+        SimulationManager.step(steps=1)
+        simulation_app.update()
+
+    peg_pos = scenario.peg.get_world_poses()[0].numpy()[0]
+    success = check_success(peg_pos, FrankaPegInsertion.HOLE_POSITION)
+    status = "SUCCEEDED" if success else "FAILED"
+    print(f"\nInsertion {status}")
+    print(f"  Peg position:   {peg_pos}")
+    print(f"  Hole center:    {FrankaPegInsertion.HOLE_POSITION}")
+    xy_dist = float(np.linalg.norm(peg_pos[:2] - FrankaPegInsertion.HOLE_POSITION[:2]))
+    print(f"  XY error:       {xy_dist * 1000:.1f} mm  (threshold 5 mm)")
+
+    timeline.stop()
+    simulation_app.close()
 
 
 if __name__ == "__main__":
