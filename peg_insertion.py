@@ -90,7 +90,72 @@ class FrankaPegInsertion:
         )
 
     def forward(self, ik_method: str = "damped-least-squares") -> bool:
-        raise NotImplementedError
+        if self.is_done():
+            return False
+
+        peg_pos = self.peg.get_world_poses()[0].numpy()[0]
+        goal_orientation = self.robot.get_downward_orientation()
+
+        if self._event == 1 and self._step == 0:
+            self._peg_grasp_z = compute_peg_grasp_z(float(peg_pos[2]))
+            self._hole_insert_z = compute_hole_insert_z()
+
+        peg_x, peg_y = float(peg_pos[0]), float(peg_pos[1])
+        hole_x, hole_y = float(self.HOLE_POSITION[0]), float(self.HOLE_POSITION[1])
+
+        if self._event == 0:
+            self.robot.set_end_effector_pose(
+                position=np.array([peg_x, peg_y, self.TRANSPORT_HEIGHT]),
+                orientation=goal_orientation,
+                ik_method=ik_method,
+            )
+        elif self._event == 1:
+            self.robot.set_end_effector_pose(
+                position=np.array([peg_x, peg_y, self._peg_grasp_z]),
+                orientation=goal_orientation,
+                ik_method=ik_method,
+            )
+        elif self._event == 2:
+            self.robot.set_end_effector_pose(
+                position=np.array([peg_x, peg_y, self._peg_grasp_z]),
+                orientation=goal_orientation,
+                ik_method=ik_method,
+            )
+        elif self._event == 3:
+            self.robot.close_gripper()
+        elif self._event == 4:
+            self.robot.set_end_effector_pose(
+                position=np.array([peg_x, peg_y, self.TRANSPORT_HEIGHT]),
+                orientation=goal_orientation,
+                ik_method=ik_method,
+            )
+        elif self._event == 5:
+            self.robot.set_end_effector_pose(
+                position=np.array([hole_x, hole_y, self.TRANSPORT_HEIGHT]),
+                orientation=goal_orientation,
+                ik_method=ik_method,
+            )
+        elif self._event == 6:
+            self.robot.set_end_effector_pose(
+                position=np.array([hole_x, hole_y, self._hole_insert_z]),
+                orientation=goal_orientation,
+                ik_method=ik_method,
+            )
+        elif self._event == 7:
+            self.robot.open_gripper()
+        elif self._event == 8:
+            self.robot.set_end_effector_pose(
+                position=np.array([hole_x, hole_y, self.TRANSPORT_HEIGHT]),
+                orientation=goal_orientation,
+                ik_method=ik_method,
+            )
+
+        self._step += 1
+        if self._step >= self.EVENTS_DT[self._event]:
+            self._event += 1
+            self._step = 0
+
+        return not self.is_done()
 
     def reset(self) -> None:
         raise NotImplementedError

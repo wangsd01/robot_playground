@@ -60,3 +60,93 @@ def test_is_done_true_when_event_equals_phase_count():
 
 def test_events_dt_has_nine_entries():
     assert len(FrankaPegInsertion.EVENTS_DT) == 9
+
+
+# ── State machine helper ──────────────────────────────────────────────────────
+
+def _make_scenario() -> FrankaPegInsertion:
+    """Return a FrankaPegInsertion with robot and peg mocked out."""
+    s = FrankaPegInsertion()
+    mock_peg = MagicMock()
+    mock_peg.get_world_poses.return_value = (
+        MagicMock(numpy=lambda: np.array([[0.4, 0.0, 0.04]])),
+        MagicMock(),
+    )
+    s.robot = MagicMock()
+    s.peg = mock_peg
+    return s
+
+
+# ── forward() tests ───────────────────────────────────────────────────────────
+
+def test_forward_returns_true_while_running():
+    s = _make_scenario()
+    assert s.forward() is True
+
+
+def test_forward_returns_false_when_done():
+    s = _make_scenario()
+    s._event = len(FrankaPegInsertion.EVENTS_DT)
+    assert s.forward() is False
+
+
+def test_forward_returns_false_when_final_phase_completes():
+    s = _make_scenario()
+    s._event = len(FrankaPegInsertion.EVENTS_DT) - 1
+    s._step = FrankaPegInsertion.EVENTS_DT[-1] - 1
+    s._peg_grasp_z = 0.098
+    s._hole_insert_z = 0.128
+    assert s.forward() is False
+    assert s.is_done()
+
+
+def test_forward_phase0_advances_after_80_steps():
+    s = _make_scenario()
+    for _ in range(FrankaPegInsertion.EVENTS_DT[0]):
+        s.forward()
+    assert s._event == 1
+    assert s._step == 0
+
+
+def test_forward_phase1_caches_heights_on_first_step():
+    s = _make_scenario()
+    s._event = 1
+    s._step = 0
+    s.forward()
+    assert s._peg_grasp_z == pytest.approx(0.04 + _GRIPPER_HEIGHT_OFFSET)
+    assert s._hole_insert_z == pytest.approx(
+        _HOLE_TOP_Z - _INSERTION_DEPTH + _GRIPPER_HEIGHT_OFFSET + _PEG_HEIGHT / 2
+    )
+
+
+def test_forward_phase3_calls_close_gripper():
+    s = _make_scenario()
+    s._event = 3
+    s._peg_grasp_z = 0.098
+    s._hole_insert_z = 0.128
+    s.forward()
+    s.robot.close_gripper.assert_called_once()
+    s.robot.set_end_effector_pose.assert_not_called()
+
+
+def test_forward_phase7_calls_open_gripper():
+    s = _make_scenario()
+    s._event = 7
+    s._peg_grasp_z = 0.098
+    s._hole_insert_z = 0.128
+    s.forward()
+    s.robot.open_gripper.assert_called_once()
+    s.robot.set_end_effector_pose.assert_not_called()
+
+
+def test_forward_phase6_targets_hole_insert_z():
+    s = _make_scenario()
+    s._event = 6
+    s._peg_grasp_z = 0.098
+    s._hole_insert_z = 0.128
+    s.forward()
+    call_kwargs = s.robot.set_end_effector_pose.call_args.kwargs
+    position = call_kwargs["position"]
+    assert position[2] == pytest.approx(0.128)
+    assert position[0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0])
+    assert position[1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1])
