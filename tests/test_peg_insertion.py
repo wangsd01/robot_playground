@@ -7,6 +7,7 @@ from peg_insertion import (
     FrankaPegInsertion,
     build_hole_fixture_parts,
     compute_insertion_hand_pose,
+    get_default_camera_view,
     compute_peg_grasp_z,
     compute_quaternion_angle_error_deg,
     compute_hole_insert_z,
@@ -60,6 +61,13 @@ def test_compute_hole_insert_z_places_peg_bottom_below_hole_top():
     ee_target_z = compute_hole_insert_z()
     peg_bottom_z = ee_target_z - _EXPECTED_HAND_TO_FINGER_PAD_CENTER_OFFSET - _EXPECTED_GRASP_POINT_ABOVE_CENTER - _PEG_HEIGHT / 2
     assert peg_bottom_z == pytest.approx(_HOLE_TOP_Z - _INSERTION_DEPTH)
+
+
+def test_get_default_camera_view_moves_camera_closer_to_robot():
+    eye, target = get_default_camera_view()
+
+    np.testing.assert_allclose(eye, np.array([1.2, 1.0, 0.9]))
+    np.testing.assert_allclose(target, np.array([0.15, 0.1, 0.2]))
 
 
 def test_compute_insertion_hand_pose_compensates_for_measured_peg_drift():

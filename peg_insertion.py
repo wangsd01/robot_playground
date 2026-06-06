@@ -15,6 +15,8 @@ _HOLE_FIXTURE_HEIGHT = 0.05
 _SLOT_INNER_WIDTH = 0.04
 _SLOT_BASE_THICKNESS = 0.01
 _SLOT_WALL_THICKNESS = (_HOLE_FIXTURE_OUTER_SIZE - _SLOT_INNER_WIDTH) / 2
+_DEFAULT_CAMERA_EYE = np.array([1.2, 1.0, 0.9])
+_DEFAULT_CAMERA_TARGET = np.array([0.15, 0.1, 0.2])
 
 
 def _normalize_quaternion(quaternion: np.ndarray) -> np.ndarray:
@@ -68,6 +70,11 @@ def compute_hole_insert_z() -> float:
     """EE z-target so the peg bottom finishes slightly below the hole top face."""
     grasp_point_above_center = _PEG_HEIGHT / 2 - _GRASP_DEPTH_BELOW_PEG_TOP
     return _HOLE_TOP_Z - _INSERTION_DEPTH + _GRIPPER_HEIGHT_OFFSET + _PEG_HEIGHT / 2 + grasp_point_above_center
+
+
+def get_default_camera_view() -> tuple[np.ndarray, np.ndarray]:
+    """Default viewport eye/target tuned to frame the robot workspace more closely."""
+    return _DEFAULT_CAMERA_EYE.copy(), _DEFAULT_CAMERA_TARGET.copy()
 
 
 def compute_insertion_hand_pose(
@@ -422,9 +429,12 @@ def main() -> None:
 
     import omni.timeline
     from isaacsim.core.simulation_manager import SimulationManager
+    from isaacsim.core.utils.viewports import set_camera_view
 
     scenario = FrankaPegInsertion()
     scenario.setup_scene()
+    camera_eye, camera_target = get_default_camera_view()
+    set_camera_view(eye=camera_eye.tolist(), target=camera_target.tolist())
 
     timeline = omni.timeline.get_timeline_interface()
     timeline.play()
