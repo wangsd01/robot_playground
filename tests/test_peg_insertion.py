@@ -6,20 +6,26 @@ from unittest.mock import MagicMock
 from peg_insertion import (
     FrankaPegInsertion,
     build_hole_fixture_parts,
+    choose_slot_aligned_insertion_orientation,
     compute_insertion_hand_pose,
     get_default_camera_view,
     compute_peg_grasp_z,
     compute_quaternion_angle_error_deg,
     compute_hole_insert_z,
     check_success,
+    quaternion_from_z_yaw,
+    validate_slot_fit,
     _PEG_HEIGHT,
     _HOLE_TOP_Z,
     _INSERTION_DEPTH,
     _HOLE_FIXTURE_HEIGHT,
-    _HOLE_FIXTURE_OUTER_SIZE,
+    _HOLE_FIXTURE_OUTER_SIZE_X,
+    _HOLE_FIXTURE_OUTER_SIZE_Y,
     _SLOT_BASE_THICKNESS,
-    _SLOT_INNER_WIDTH,
-    _SLOT_WALL_THICKNESS,
+    _SLOT_INNER_SIZE_X,
+    _SLOT_INNER_SIZE_Y,
+    _SLOT_WALL_THICKNESS_X,
+    _SLOT_WALL_THICKNESS_Y,
 )
 
 _EXPECTED_HAND_TO_FINGER_PAD_CENTER_OFFSET = 0.10365
@@ -105,6 +111,48 @@ def test_compute_quaternion_angle_error_deg():
     assert compute_quaternion_angle_error_deg(_Z_90_QUAT, _IDENTITY_QUAT) == pytest.approx(90.0)
 
 
+def test_choose_slot_aligned_insertion_orientation_prefers_slot_yaw_when_dimensions_match():
+    orientation = choose_slot_aligned_insertion_orientation(
+        slot_yaw=np.pi / 6,
+        peg_xy=np.array([0.02, 0.03]),
+        slot_xy=np.array([0.021, 0.031]),
+    )
+
+    np.testing.assert_allclose(orientation, quaternion_from_z_yaw(np.pi / 6))
+
+
+def test_choose_slot_aligned_insertion_orientation_rotates_ninety_degrees_when_swap_matches():
+    orientation = choose_slot_aligned_insertion_orientation(
+        slot_yaw=np.pi / 6,
+        peg_xy=np.array([0.02, 0.03]),
+        slot_xy=np.array([0.031, 0.021]),
+    )
+
+    np.testing.assert_allclose(orientation, quaternion_from_z_yaw(np.pi / 6 + np.pi / 2))
+
+
+def test_choose_slot_aligned_insertion_orientation_raises_when_no_candidate_fits():
+    with pytest.raises(ValueError, match="does not fit"):
+        choose_slot_aligned_insertion_orientation(
+            slot_yaw=0.0,
+            peg_xy=np.array([0.02, 0.03]),
+            slot_xy=np.array([0.025, 0.025]),
+        )
+
+
+def test_validate_slot_fit_accepts_direct_fit():
+    validate_slot_fit(np.array([0.02, 0.03]), np.array([0.021, 0.031]))
+
+
+def test_validate_slot_fit_accepts_swapped_fit():
+    validate_slot_fit(np.array([0.02, 0.03]), np.array([0.031, 0.021]))
+
+
+def test_validate_slot_fit_raises_when_neither_candidate_fits():
+    with pytest.raises(ValueError, match="does not fit"):
+        validate_slot_fit(np.array([0.02, 0.03]), np.array([0.025, 0.025]))
+
+
 def test_compute_insertion_hand_pose_preserves_rotated_hand_to_peg_offset():
     current_peg_pos = np.array([0.0, 0.0, -1.0])
     current_peg_orientation = _IDENTITY_QUAT
@@ -175,6 +223,23 @@ def test_build_hole_fixture_parts_creates_open_top_slot():
     for wall in (front, back, left, right):
         assert wall["position"][2] == pytest.approx(expected_wall_z)
         assert wall["path"].startswith(FrankaPegInsertion.HOLE_FIXTURE_PATH + "/")
+
+
+def test_build_hole_fixture_parts_uses_rectangular_slot_dimensions():
+    parts = build_hole_fixture_parts(FrankaPegInsertion.HOLE_POSITION, FrankaPegInsertion.HOLE_FIXTURE_PATH)
+
+    part_by_name = {part["name"]: part for part in parts}
+    left = part_by_name["left_wall"]
+    front = part_by_name["front_wall"]
+
+    np.testing.assert_array_almost_equal(
+        left["scale"],
+        [_SLOT_WALL_THICKNESS_X, _SLOT_INNER_SIZE_Y, _HOLE_FIXTURE_HEIGHT - _SLOT_BASE_THICKNESS],
+    )
+    np.testing.assert_array_almost_equal(
+        front["scale"],
+        [_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, _HOLE_FIXTURE_HEIGHT - _SLOT_BASE_THICKNESS],
+    )
 
 
 # ── is_done() ─────────────────────────────────────────────────────────────────

@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 
 # ── Physical constants ────────────────────────────────────────────────────────
+_PEG_SIZE_X = 0.02
+_PEG_SIZE_Y = 0.03
 _PEG_HEIGHT = 0.08                  # total peg height (m)
 _FINGER_JOINT_Z_OFFSET = 0.0584     # panda_hand frame -> finger link origin (m)
 _FINGERTIP_PAD_CENTER_OFFSET = 0.04525  # finger link origin -> center of finger pad contact patch (m)
@@ -10,11 +12,15 @@ _GRIPPER_HEIGHT_OFFSET = _FINGER_JOINT_Z_OFFSET + _FINGERTIP_PAD_CENTER_OFFSET
 _GRASP_DEPTH_BELOW_PEG_TOP = 0.025  # target grasp band, chosen as a compromise between palm clearance and peg engagement (m)
 _INSERTION_DEPTH = 0.02             # how far peg bottom should enter below the hole top (m)
 _HOLE_TOP_Z = 0.05                  # z of hole fixture top face (m)
-_HOLE_FIXTURE_OUTER_SIZE = 0.12
+_HOLE_FIXTURE_OUTER_SIZE_X = 0.12
+_HOLE_FIXTURE_OUTER_SIZE_Y = 0.12
 _HOLE_FIXTURE_HEIGHT = 0.05
-_SLOT_INNER_WIDTH = 0.04
+_SLOT_INNER_SIZE_X = 0.021
+_SLOT_INNER_SIZE_Y = 0.031
+_SLOT_YAW = 0.0
 _SLOT_BASE_THICKNESS = 0.01
-_SLOT_WALL_THICKNESS = (_HOLE_FIXTURE_OUTER_SIZE - _SLOT_INNER_WIDTH) / 2
+_SLOT_WALL_THICKNESS_X = (_HOLE_FIXTURE_OUTER_SIZE_X - _SLOT_INNER_SIZE_X) / 2
+_SLOT_WALL_THICKNESS_Y = (_HOLE_FIXTURE_OUTER_SIZE_Y - _SLOT_INNER_SIZE_Y) / 2
 _DEFAULT_CAMERA_EYE = np.array([1.2, 1.0, 0.9])
 _DEFAULT_CAMERA_TARGET = np.array([0.15, 0.1, 0.2])
 
@@ -57,6 +63,40 @@ def _rotate_vector(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
         _quaternion_conjugate(quaternion),
     )
     return rotated[1:]
+
+
+def validate_slot_fit(peg_xy: np.ndarray, slot_xy: np.ndarray, atol: float = 1e-6) -> None:
+    peg_xy = np.asarray(peg_xy, dtype=float)
+    slot_xy = np.asarray(slot_xy, dtype=float)
+    if np.all(peg_xy <= slot_xy + atol):
+        return
+    if np.all(peg_xy[::-1] <= slot_xy + atol):
+        return
+    raise ValueError(
+        f"Peg {peg_xy.tolist()} does not fit slot {slot_xy.tolist()} in either allowed orientation."
+    )
+
+
+def quaternion_from_z_yaw(yaw: float) -> np.ndarray:
+    half_yaw = yaw / 2.0
+    return _normalize_quaternion(
+        np.array([np.cos(half_yaw), 0.0, 0.0, np.sin(half_yaw)], dtype=float)
+    )
+
+
+def choose_slot_aligned_insertion_orientation(
+    slot_yaw: float,
+    peg_xy: np.ndarray,
+    slot_xy: np.ndarray,
+    atol: float = 1e-6,
+) -> np.ndarray:
+    peg_xy = np.asarray(peg_xy, dtype=float)
+    slot_xy = np.asarray(slot_xy, dtype=float)
+    validate_slot_fit(peg_xy, slot_xy, atol=atol)
+
+    if np.all(peg_xy <= slot_xy + atol):
+        return quaternion_from_z_yaw(slot_yaw)
+    return quaternion_from_z_yaw(slot_yaw + np.pi / 2.0)
 
 
 def compute_peg_grasp_z(peg_center_z: float) -> float:
@@ -136,38 +176,39 @@ def build_hole_fixture_parts(hole_top_center: np.ndarray, root_path: str) -> lis
     wall_height = _HOLE_FIXTURE_HEIGHT - _SLOT_BASE_THICKNESS
     base_center_z = fixture_bottom_z + _SLOT_BASE_THICKNESS / 2
     wall_center_z = fixture_bottom_z + _SLOT_BASE_THICKNESS + wall_height / 2
-    wall_offset = _SLOT_INNER_WIDTH / 2 + _SLOT_WALL_THICKNESS / 2
+    x_wall_offset = _SLOT_INNER_SIZE_X / 2 + _SLOT_WALL_THICKNESS_X / 2
+    y_wall_offset = _SLOT_INNER_SIZE_Y / 2 + _SLOT_WALL_THICKNESS_Y / 2
 
     return [
         {
             "name": "base",
             "path": f"{root_path}/base",
             "position": np.array([hole_x, hole_y, base_center_z]),
-            "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE, _HOLE_FIXTURE_OUTER_SIZE, _SLOT_BASE_THICKNESS]),
+            "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE_X, _HOLE_FIXTURE_OUTER_SIZE_Y, _SLOT_BASE_THICKNESS]),
         },
         {
             "name": "front_wall",
             "path": f"{root_path}/front_wall",
-            "position": np.array([hole_x, hole_y + wall_offset, wall_center_z]),
-            "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE, _SLOT_WALL_THICKNESS, wall_height]),
+            "position": np.array([hole_x, hole_y + y_wall_offset, wall_center_z]),
+            "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, wall_height]),
         },
         {
             "name": "back_wall",
             "path": f"{root_path}/back_wall",
-            "position": np.array([hole_x, hole_y - wall_offset, wall_center_z]),
-            "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE, _SLOT_WALL_THICKNESS, wall_height]),
+            "position": np.array([hole_x, hole_y - y_wall_offset, wall_center_z]),
+            "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, wall_height]),
         },
         {
             "name": "left_wall",
             "path": f"{root_path}/left_wall",
-            "position": np.array([hole_x - wall_offset, hole_y, wall_center_z]),
-            "scale": np.array([_SLOT_WALL_THICKNESS, _SLOT_INNER_WIDTH, wall_height]),
+            "position": np.array([hole_x - x_wall_offset, hole_y, wall_center_z]),
+            "scale": np.array([_SLOT_WALL_THICKNESS_X, _SLOT_INNER_SIZE_Y, wall_height]),
         },
         {
             "name": "right_wall",
             "path": f"{root_path}/right_wall",
-            "position": np.array([hole_x + wall_offset, hole_y, wall_center_z]),
-            "scale": np.array([_SLOT_WALL_THICKNESS, _SLOT_INNER_WIDTH, wall_height]),
+            "position": np.array([hole_x + x_wall_offset, hole_y, wall_center_z]),
+            "scale": np.array([_SLOT_WALL_THICKNESS_X, _SLOT_INNER_SIZE_Y, wall_height]),
         },
     ]
 
