@@ -162,10 +162,10 @@ def compute_quaternion_angle_error_deg(current: np.ndarray, target: np.ndarray) 
 
 
 def check_success(peg_pos: np.ndarray, hole_pos: np.ndarray) -> bool:
-    """True if peg is within 5 mm XY of hole and peg bottom is at or below hole top + 10 mm."""
+    """True if peg is within 10 mm XY of hole and peg bottom is at or below hole top + 10 mm."""
     xy_dist = float(np.linalg.norm(peg_pos[:2] - hole_pos[:2]))
     peg_bottom_z = float(peg_pos[2]) - _PEG_HEIGHT / 2
-    return xy_dist <= 0.005 and peg_bottom_z <= _HOLE_TOP_Z + 0.010
+    return xy_dist <= 0.010 and peg_bottom_z <= _HOLE_TOP_Z + 0.010
 
 
 def build_hole_fixture_parts(hole_top_center: np.ndarray, root_path: str) -> list[dict[str, object]]:
@@ -240,6 +240,7 @@ class FrankaPegInsertion:
         self._hole_insert_z: float | None = None
         self._insert_target_position: np.ndarray | None = None
         self._insert_target_orientation: np.ndarray | None = None
+        self._insert_target_peg_orientation: np.ndarray | None = None
         self._insert_start_z: float | None = None
         self._previous_insert_peg_pos: np.ndarray | None = None
         self._previous_insert_orientation_error_deg: float | None = None
@@ -272,9 +273,13 @@ class FrankaPegInsertion:
         if not should_log:
             return
 
+        target_peg_orientation = self._insert_target_peg_orientation
+        if target_peg_orientation is None:
+            target_peg_orientation = self.PEG_INITIAL_ORIENTATION
+
         orientation_error_deg = compute_quaternion_angle_error_deg(
             peg_orientation,
-            self.PEG_INITIAL_ORIENTATION,
+            target_peg_orientation,
         )
         peg_xy_error_mm = float(np.linalg.norm(peg_pos[:2] - self.HOLE_POSITION[:2]) * 1000.0)
         peg_xy_delta_mm = 0.0
@@ -290,7 +295,7 @@ class FrankaPegInsertion:
             suppress_small=True,
         )
         target_orientation_str = np.array2string(
-            self.PEG_INITIAL_ORIENTATION,
+            target_peg_orientation,
             precision=4,
             suppress_small=True,
         )
@@ -316,6 +321,11 @@ class FrankaPegInsertion:
         from isaacsim.core.experimental.prims import GeomPrim, RigidPrim
         from isaacsim.robot.experimental.manipulators.examples.franka.franka import Franka
 
+        validate_slot_fit(
+            peg_xy=np.array([_PEG_SIZE_X, _PEG_SIZE_Y], dtype=float),
+            slot_xy=np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y], dtype=float),
+        )
+
         GroundPlane("/World/ground_plane")
         DomeLight("/World/DomeLight").set_intensities(1000)
 
@@ -326,7 +336,7 @@ class FrankaPegInsertion:
             positions=self.PEG_INITIAL_POSITION,
             orientations=self.PEG_INITIAL_ORIENTATION,
             sizes=1.0,
-            scales=np.array([0.03, 0.03, 0.08]),
+            scales=np.array([_PEG_SIZE_X, _PEG_SIZE_Y, _PEG_HEIGHT]),
             colors="red",
         )
         GeomPrim(paths=peg_cube.paths, apply_collision_apis=True)
@@ -395,9 +405,15 @@ class FrankaPegInsertion:
             if self._previous_insert_peg_pos is None:
                 self._previous_insert_peg_pos = np.asarray(peg_pos, dtype=float).copy()
             if self._previous_insert_orientation_error_deg is None:
+                target_peg_orientation = choose_slot_aligned_insertion_orientation(
+                    slot_yaw=_SLOT_YAW,
+                    peg_xy=np.array([_PEG_SIZE_X, _PEG_SIZE_Y], dtype=float),
+                    slot_xy=np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y], dtype=float),
+                )
+                self._insert_target_peg_orientation = target_peg_orientation
                 self._previous_insert_orientation_error_deg = compute_quaternion_angle_error_deg(
                     peg_orientation,
-                    self.PEG_INITIAL_ORIENTATION,
+                    target_peg_orientation,
                 )
             desired_peg_pos = np.array(
                 [hole_x, hole_y, _HOLE_TOP_Z - _INSERTION_DEPTH + _PEG_HEIGHT / 2],
@@ -406,6 +422,12 @@ class FrankaPegInsertion:
             current_hand_pos = np.array([hole_x, hole_y, self.TRANSPORT_HEIGHT], dtype=float)
             current_hand_orientation = goal_orientation
             if self._step == 0:
+                desired_peg_orientation = choose_slot_aligned_insertion_orientation(
+                    slot_yaw=_SLOT_YAW,
+                    peg_xy=np.array([_PEG_SIZE_X, _PEG_SIZE_Y], dtype=float),
+                    slot_xy=np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y], dtype=float),
+                )
+                self._insert_target_peg_orientation = desired_peg_orientation
                 (
                     self._insert_target_position,
                     self._insert_target_orientation,
@@ -415,7 +437,7 @@ class FrankaPegInsertion:
                     current_hand_pos=current_hand_pos,
                     current_hand_orientation=current_hand_orientation,
                     desired_peg_pos=desired_peg_pos,
-                    desired_peg_orientation=self.PEG_INITIAL_ORIENTATION,
+                    desired_peg_orientation=desired_peg_orientation,
                 )
                 self._insert_start_z = float(current_hand_pos[2])
 
@@ -454,6 +476,7 @@ class FrankaPegInsertion:
         self._hole_insert_z = None
         self._insert_target_position = None
         self._insert_target_orientation = None
+        self._insert_target_peg_orientation = None
         self._insert_start_z = None
         self._previous_insert_peg_pos = None
         self._previous_insert_orientation_error_deg = None

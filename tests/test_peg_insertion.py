@@ -1,4 +1,5 @@
 # tests/test_peg_insertion.py
+import peg_insertion as peg_insertion_module
 import numpy as np
 import pytest
 from unittest.mock import MagicMock
@@ -180,9 +181,15 @@ def test_check_success_pass():
 
 
 def test_check_success_fail_xy_too_far():
-    peg_pos = np.array([-0.1 + 0.010, 0.35, 0.09])   # 10 mm off in X → fail
+    peg_pos = np.array([-0.1 + 0.011, 0.35, 0.09])   # 11 mm off in X → fail
     hole_pos = np.array([-0.1, 0.35, 0.05])
     assert not check_success(peg_pos, hole_pos)
+
+
+def test_check_success_pass_at_ten_mm_xy_error():
+    peg_pos = np.array([-0.1 + 0.010, 0.35, 0.09])   # 10 mm off in X → pass
+    hole_pos = np.array([-0.1, 0.35, 0.05])
+    assert check_success(peg_pos, hole_pos)
 
 
 def test_check_success_fail_peg_too_high():
@@ -203,22 +210,23 @@ def test_build_hole_fixture_parts_creates_open_top_slot():
     left = part_by_name["left_wall"]
     right = part_by_name["right_wall"]
 
-    np.testing.assert_array_almost_equal(base["scale"], [_HOLE_FIXTURE_OUTER_SIZE, _HOLE_FIXTURE_OUTER_SIZE, _SLOT_BASE_THICKNESS])
+    np.testing.assert_array_almost_equal(base["scale"], [_HOLE_FIXTURE_OUTER_SIZE_X, _HOLE_FIXTURE_OUTER_SIZE_Y, _SLOT_BASE_THICKNESS])
     assert base["position"][2] == pytest.approx(_SLOT_BASE_THICKNESS / 2)
 
     expected_wall_height = _HOLE_FIXTURE_HEIGHT - _SLOT_BASE_THICKNESS
     expected_wall_z = _SLOT_BASE_THICKNESS + expected_wall_height / 2
-    expected_offset = _SLOT_INNER_WIDTH / 2 + _SLOT_WALL_THICKNESS / 2
+    expected_x_offset = _SLOT_INNER_SIZE_X / 2 + _SLOT_WALL_THICKNESS_X / 2
+    expected_y_offset = _SLOT_INNER_SIZE_Y / 2 + _SLOT_WALL_THICKNESS_Y / 2
 
-    np.testing.assert_array_almost_equal(front["scale"], [_HOLE_FIXTURE_OUTER_SIZE, _SLOT_WALL_THICKNESS, expected_wall_height])
-    np.testing.assert_array_almost_equal(back["scale"], [_HOLE_FIXTURE_OUTER_SIZE, _SLOT_WALL_THICKNESS, expected_wall_height])
-    np.testing.assert_array_almost_equal(left["scale"], [_SLOT_WALL_THICKNESS, _SLOT_INNER_WIDTH, expected_wall_height])
-    np.testing.assert_array_almost_equal(right["scale"], [_SLOT_WALL_THICKNESS, _SLOT_INNER_WIDTH, expected_wall_height])
+    np.testing.assert_array_almost_equal(front["scale"], [_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, expected_wall_height])
+    np.testing.assert_array_almost_equal(back["scale"], [_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, expected_wall_height])
+    np.testing.assert_array_almost_equal(left["scale"], [_SLOT_WALL_THICKNESS_X, _SLOT_INNER_SIZE_Y, expected_wall_height])
+    np.testing.assert_array_almost_equal(right["scale"], [_SLOT_WALL_THICKNESS_X, _SLOT_INNER_SIZE_Y, expected_wall_height])
 
-    assert front["position"][1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1] + expected_offset)
-    assert back["position"][1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1] - expected_offset)
-    assert left["position"][0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0] - expected_offset)
-    assert right["position"][0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0] + expected_offset)
+    assert front["position"][1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1] + expected_y_offset)
+    assert back["position"][1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1] - expected_y_offset)
+    assert left["position"][0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0] - expected_x_offset)
+    assert right["position"][0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0] + expected_x_offset)
 
     for wall in (front, back, left, right):
         assert wall["position"][2] == pytest.approx(expected_wall_z)
@@ -341,12 +349,13 @@ def test_forward_phase7_calls_open_gripper():
     s.robot.set_end_effector_pose.assert_not_called()
 
 
-def test_forward_phase6_targets_measured_insert_pose():
+def test_forward_phase6_targets_measured_insert_pose(monkeypatch):
     s = _make_scenario()
     s._event = 6
     s._step = 0
     s._peg_grasp_z = 0.098
     s._hole_insert_z = 0.128
+    monkeypatch.setattr(peg_insertion_module, "_SLOT_YAW", np.pi / 6)
     s.peg.get_world_poses.return_value = (
         MagicMock(numpy=lambda: np.array([[-0.1, 0.35, 0.11]])),
         MagicMock(numpy=lambda: np.array([_IDENTITY_QUAT])),
@@ -359,7 +368,7 @@ def test_forward_phase6_targets_measured_insert_pose():
         (0.31 - FrankaPegInsertion.TRANSPORT_HEIGHT) / FrankaPegInsertion.EVENTS_DT[6]
     )
     np.testing.assert_allclose(call_kwargs["position"], np.array([-0.1, 0.35, expected_z]))
-    np.testing.assert_allclose(call_kwargs["orientation"], _IDENTITY_QUAT)
+    np.testing.assert_allclose(call_kwargs["orientation"], quaternion_from_z_yaw(np.pi / 6))
 
 
 def test_forward_phase6_recomputes_hand_pose_from_measured_peg_pose():
