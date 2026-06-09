@@ -16,6 +16,9 @@ from peg_insertion import (
     check_success,
     quaternion_from_z_yaw,
     validate_slot_fit,
+    _quaternion_multiply,
+    _PEG_SIZE_X,
+    _PEG_SIZE_Y,
     _PEG_HEIGHT,
     _HOLE_TOP_Z,
     _INSERTION_DEPTH,
@@ -27,6 +30,12 @@ from peg_insertion import (
     _SLOT_INNER_SIZE_Y,
     _SLOT_WALL_THICKNESS_X,
     _SLOT_WALL_THICKNESS_Y,
+    _SLOT_YAW,
+    _INSERTION_ALIGNMENT_CLEARANCE,
+    _INSERTION_ALIGNMENT_STEPS,
+    _INSERTION_ALIGN_MAX_XY_STEP,
+    _INSERTION_ALIGN_YAW_GAIN,
+    _INSERTION_ALIGN_MAX_YAW_STEP,
 )
 
 _EXPECTED_HAND_TO_FINGER_PAD_CENTER_OFFSET = 0.10365
@@ -110,6 +119,15 @@ def test_compute_insertion_hand_pose_compensates_for_measured_peg_drift():
 
 def test_compute_quaternion_angle_error_deg():
     assert compute_quaternion_angle_error_deg(_Z_90_QUAT, _IDENTITY_QUAT) == pytest.approx(90.0)
+
+
+def test_default_slot_yaw_is_stored_in_radians():
+    assert _SLOT_YAW == pytest.approx(np.deg2rad(10.0))
+
+
+def test_default_slot_dimensions_are_increased_for_more_clearance():
+    assert _SLOT_INNER_SIZE_X == pytest.approx(0.026)
+    assert _SLOT_INNER_SIZE_Y == pytest.approx(0.036)
 
 
 def test_choose_slot_aligned_insertion_orientation_prefers_slot_yaw_when_dimensions_match():
@@ -198,7 +216,8 @@ def test_check_success_fail_peg_too_high():
     assert not check_success(peg_pos, hole_pos)
 
 
-def test_build_hole_fixture_parts_creates_open_top_slot():
+def test_build_hole_fixture_parts_creates_open_top_slot(monkeypatch):
+    monkeypatch.setattr(peg_insertion_module, "_SLOT_YAW", 0.0)
     parts = build_hole_fixture_parts(FrankaPegInsertion.HOLE_POSITION, FrankaPegInsertion.HOLE_FIXTURE_PATH)
 
     assert [part["name"] for part in parts] == ["base", "front_wall", "back_wall", "left_wall", "right_wall"]
@@ -233,7 +252,8 @@ def test_build_hole_fixture_parts_creates_open_top_slot():
         assert wall["path"].startswith(FrankaPegInsertion.HOLE_FIXTURE_PATH + "/")
 
 
-def test_build_hole_fixture_parts_uses_rectangular_slot_dimensions():
+def test_build_hole_fixture_parts_uses_rectangular_slot_dimensions(monkeypatch):
+    monkeypatch.setattr(peg_insertion_module, "_SLOT_YAW", 0.0)
     parts = build_hole_fixture_parts(FrankaPegInsertion.HOLE_POSITION, FrankaPegInsertion.HOLE_FIXTURE_PATH)
 
     part_by_name = {part["name"]: part for part in parts}
@@ -248,6 +268,25 @@ def test_build_hole_fixture_parts_uses_rectangular_slot_dimensions():
         front["scale"],
         [_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, _HOLE_FIXTURE_HEIGHT - _SLOT_BASE_THICKNESS],
     )
+
+
+def test_build_hole_fixture_parts_rotates_slot_fixture_with_slot_yaw(monkeypatch):
+    monkeypatch.setattr(peg_insertion_module, "_SLOT_YAW", np.pi / 2)
+    parts = build_hole_fixture_parts(FrankaPegInsertion.HOLE_POSITION, FrankaPegInsertion.HOLE_FIXTURE_PATH)
+
+    part_by_name = {part["name"]: part for part in parts}
+    front = part_by_name["front_wall"]
+    left = part_by_name["left_wall"]
+
+    expected_x_offset = _SLOT_INNER_SIZE_X / 2 + _SLOT_WALL_THICKNESS_X / 2
+    expected_y_offset = _SLOT_INNER_SIZE_Y / 2 + _SLOT_WALL_THICKNESS_Y / 2
+
+    assert front["position"][0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0] - expected_y_offset)
+    assert front["position"][1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1])
+    assert left["position"][0] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[0])
+    assert left["position"][1] == pytest.approx(FrankaPegInsertion.HOLE_POSITION[1] - expected_x_offset)
+    np.testing.assert_allclose(front["orientation"], quaternion_from_z_yaw(np.pi / 2))
+    np.testing.assert_allclose(left["orientation"], quaternion_from_z_yaw(np.pi / 2))
 
 
 # ── is_done() ─────────────────────────────────────────────────────────────────
@@ -349,7 +388,7 @@ def test_forward_phase7_calls_open_gripper():
     s.robot.set_end_effector_pose.assert_not_called()
 
 
-def test_forward_phase6_targets_measured_insert_pose(monkeypatch):
+def test_forward_phase6_targets_measured_alignment_pose(monkeypatch):
     s = _make_scenario()
     s._event = 6
     s._step = 0
@@ -364,10 +403,28 @@ def test_forward_phase6_targets_measured_insert_pose(monkeypatch):
     s.forward()
 
     call_kwargs = s.robot.set_end_effector_pose.call_args.kwargs
-    expected_z = FrankaPegInsertion.TRANSPORT_HEIGHT + (
-        (0.31 - FrankaPegInsertion.TRANSPORT_HEIGHT) / FrankaPegInsertion.EVENTS_DT[6]
+    desired_alignment_peg_pos = np.array(
+        [
+            FrankaPegInsertion.HOLE_POSITION[0],
+            FrankaPegInsertion.HOLE_POSITION[1],
+            _HOLE_TOP_Z + _INSERTION_ALIGNMENT_CLEARANCE + _PEG_HEIGHT / 2,
+        ]
     )
-    np.testing.assert_allclose(call_kwargs["position"], np.array([-0.1, 0.35, expected_z]))
+    expected_position, _ = compute_insertion_hand_pose(
+        current_peg_pos=np.array([-0.1, 0.35, 0.11]),
+        current_peg_orientation=_IDENTITY_QUAT,
+        current_hand_pos=np.array(
+            [
+                FrankaPegInsertion.HOLE_POSITION[0],
+                FrankaPegInsertion.HOLE_POSITION[1],
+                FrankaPegInsertion.TRANSPORT_HEIGHT,
+            ]
+        ),
+        current_hand_orientation=_IDENTITY_QUAT,
+        desired_peg_pos=desired_alignment_peg_pos,
+        desired_peg_orientation=quaternion_from_z_yaw(np.pi / 6),
+    )
+    np.testing.assert_allclose(call_kwargs["position"], expected_position)
     np.testing.assert_allclose(call_kwargs["orientation"], quaternion_from_z_yaw(np.pi / 6))
 
 
@@ -385,11 +442,33 @@ def test_forward_phase6_recomputes_hand_pose_from_measured_peg_pose():
     s.forward()
 
     call_kwargs = s.robot.set_end_effector_pose.call_args.kwargs
-    expected_z = FrankaPegInsertion.TRANSPORT_HEIGHT + (
-        (0.31 - FrankaPegInsertion.TRANSPORT_HEIGHT) / FrankaPegInsertion.EVENTS_DT[6]
+    desired_peg_orientation = choose_slot_aligned_insertion_orientation(
+        _SLOT_YAW,
+        np.array([_PEG_SIZE_X, _PEG_SIZE_Y]),
+        np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y]),
     )
-    np.testing.assert_allclose(call_kwargs["position"], np.array([-0.093, 0.358, expected_z]))
-    np.testing.assert_allclose(call_kwargs["orientation"], _Z_NEG_90_QUAT)
+    expected_position, expected_orientation = compute_insertion_hand_pose(
+        current_peg_pos=np.array([-0.092, 0.343, 0.11]),
+        current_peg_orientation=_Z_90_QUAT,
+        current_hand_pos=np.array(
+            [
+                FrankaPegInsertion.HOLE_POSITION[0],
+                FrankaPegInsertion.HOLE_POSITION[1],
+                FrankaPegInsertion.TRANSPORT_HEIGHT,
+            ]
+        ),
+        current_hand_orientation=_IDENTITY_QUAT,
+        desired_peg_pos=np.array(
+            [
+                FrankaPegInsertion.HOLE_POSITION[0],
+                FrankaPegInsertion.HOLE_POSITION[1],
+                _HOLE_TOP_Z + _INSERTION_ALIGNMENT_CLEARANCE + _PEG_HEIGHT / 2,
+            ]
+        ),
+        desired_peg_orientation=desired_peg_orientation,
+    )
+    np.testing.assert_allclose(call_kwargs["position"], expected_position)
+    np.testing.assert_allclose(call_kwargs["orientation"], expected_orientation)
 
 
 def test_forward_phase6_logs_peg_orientation_drift(capsys):
@@ -406,12 +485,20 @@ def test_forward_phase6_logs_peg_orientation_drift(capsys):
     s.forward()
 
     captured = capsys.readouterr()
+    expected_orientation_error_deg = compute_quaternion_angle_error_deg(
+        _Z_90_QUAT,
+        choose_slot_aligned_insertion_orientation(
+            _SLOT_YAW,
+            np.array([_PEG_SIZE_X, _PEG_SIZE_Y]),
+            np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y]),
+        ),
+    )
     assert "[insert]" in captured.out
     assert "step=1/60" in captured.out
-    assert "peg_orientation_error_deg=90.00" in captured.out
+    assert f"peg_orientation_error_deg={expected_orientation_error_deg:.2f}" in captured.out
 
 
-def test_forward_phase6_retargets_from_latest_measured_peg_pose_each_step():
+def test_forward_phase6_holds_alignment_height_before_descent():
     s = _make_scenario()
     s._event = 6
     s._step = 0
@@ -424,8 +511,8 @@ def test_forward_phase6_retargets_from_latest_measured_peg_pose_each_step():
             MagicMock(numpy=lambda: np.array([_Z_90_QUAT])),
         ),
         (
-            MagicMock(numpy=lambda: np.array([[-0.097, 0.347, 0.108]])),
-            MagicMock(numpy=lambda: np.array([_IDENTITY_QUAT])),
+            MagicMock(numpy=lambda: np.array([[-0.092, 0.343, 0.11]])),
+            MagicMock(numpy=lambda: np.array([_Z_90_QUAT])),
         ),
     ]
     s.peg.get_world_poses.side_effect = peg_measurements
@@ -436,21 +523,17 @@ def test_forward_phase6_retargets_from_latest_measured_peg_pose_each_step():
     s.forward()
     second_call = s.robot.set_end_effector_pose.call_args.kwargs
 
-    expected_first_z = FrankaPegInsertion.TRANSPORT_HEIGHT + (
-        (0.31 - FrankaPegInsertion.TRANSPORT_HEIGHT) / FrankaPegInsertion.EVENTS_DT[6]
+    assert second_call["position"][2] == pytest.approx(first_call["position"][2])
+    assert np.linalg.norm(second_call["position"][:2] - first_call["position"][:2]) <= (
+        _INSERTION_ALIGN_MAX_XY_STEP + 1e-9
     )
-    np.testing.assert_allclose(first_call["position"], np.array([-0.093, 0.358, expected_first_z]))
-    np.testing.assert_allclose(first_call["orientation"], _Z_NEG_90_QUAT)
-    assert second_call["position"][0] == pytest.approx(first_call["position"][0])
-    assert second_call["position"][1] == pytest.approx(first_call["position"][1])
-    assert second_call["orientation"][0] == pytest.approx(first_call["orientation"][0])
-    assert second_call["orientation"][1] == pytest.approx(first_call["orientation"][1])
-    assert second_call["orientation"][2] == pytest.approx(first_call["orientation"][2])
-    assert second_call["orientation"][3] == pytest.approx(first_call["orientation"][3])
-    assert second_call["position"][2] < first_call["position"][2]
+    assert compute_quaternion_angle_error_deg(
+        first_call["orientation"],
+        second_call["orientation"],
+    ) <= np.degrees(_INSERTION_ALIGN_MAX_YAW_STEP) + 1e-9
 
 
-def test_forward_phase6_ignores_later_peg_xy_orientation_drift():
+def test_forward_phase6_applies_bounded_xy_and_yaw_corrections_during_alignment():
     s = _make_scenario()
     s._event = 6
     s._step = 0
@@ -475,9 +558,63 @@ def test_forward_phase6_ignores_later_peg_xy_orientation_drift():
     s.forward()
     second_call = s.robot.set_end_effector_pose.call_args.kwargs
 
-    np.testing.assert_allclose(second_call["position"][:2], first_call["position"][:2])
-    np.testing.assert_allclose(second_call["orientation"], first_call["orientation"])
-    assert second_call["position"][2] < first_call["position"][2]
+    xy_delta = np.linalg.norm(second_call["position"][:2] - first_call["position"][:2])
+    orientation_delta_deg = compute_quaternion_angle_error_deg(
+        first_call["orientation"],
+        second_call["orientation"],
+    )
+
+    assert xy_delta > 0.0
+    assert xy_delta <= _INSERTION_ALIGN_MAX_XY_STEP + 1e-9
+    assert orientation_delta_deg > 0.0
+    assert orientation_delta_deg <= np.degrees(_INSERTION_ALIGN_MAX_YAW_STEP) + 1e-9
+    assert second_call["position"][2] == pytest.approx(first_call["position"][2])
+
+
+def test_forward_phase6_yaw_correction_preserves_downward_tilt():
+    s = _make_scenario()
+    s.robot.get_downward_orientation.return_value = _Y_90_QUAT
+    s._event = 6
+    s._step = 0
+    s._peg_grasp_z = 0.098
+    s._hole_insert_z = 0.128
+
+    peg_measurements = [
+        (
+            MagicMock(numpy=lambda: np.array([[-0.1, 0.35, 0.11]])),
+            MagicMock(numpy=lambda: np.array([_IDENTITY_QUAT])),
+        ),
+        (
+            MagicMock(numpy=lambda: np.array([[-0.1, 0.35, 0.11]])),
+            MagicMock(numpy=lambda: np.array([_IDENTITY_QUAT])),
+        ),
+    ]
+    s.peg.get_world_poses.side_effect = peg_measurements
+
+    s.forward()
+    first_call = s.robot.set_end_effector_pose.call_args.kwargs
+
+    s.forward()
+    second_call = s.robot.set_end_effector_pose.call_args.kwargs
+
+    desired_peg_orientation = choose_slot_aligned_insertion_orientation(
+        _SLOT_YAW,
+        np.array([_PEG_SIZE_X, _PEG_SIZE_Y]),
+        np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y]),
+    )
+    target_yaw = 2.0 * np.arctan2(desired_peg_orientation[3], desired_peg_orientation[0])
+    yaw_correction = np.clip(
+        _INSERTION_ALIGN_YAW_GAIN * target_yaw,
+        -_INSERTION_ALIGN_MAX_YAW_STEP,
+        _INSERTION_ALIGN_MAX_YAW_STEP,
+    )
+    expected_second_orientation = _quaternion_multiply(
+        quaternion_from_z_yaw(yaw_correction),
+        first_call["orientation"],
+    )
+
+    np.testing.assert_allclose(second_call["orientation"], expected_second_orientation)
+    assert abs(second_call["orientation"][2]) > 0.1
 
 
 def test_forward_phase6_does_not_depend_on_cached_commanded_hand_pose():
@@ -496,11 +633,33 @@ def test_forward_phase6_does_not_depend_on_cached_commanded_hand_pose():
     s.forward()
 
     call_kwargs = s.robot.set_end_effector_pose.call_args.kwargs
-    expected_z = FrankaPegInsertion.TRANSPORT_HEIGHT + (
-        (0.31 - FrankaPegInsertion.TRANSPORT_HEIGHT) / FrankaPegInsertion.EVENTS_DT[6]
+    desired_peg_orientation = choose_slot_aligned_insertion_orientation(
+        _SLOT_YAW,
+        np.array([_PEG_SIZE_X, _PEG_SIZE_Y]),
+        np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y]),
     )
-    np.testing.assert_allclose(call_kwargs["position"], np.array([-0.093, 0.358, expected_z]))
-    np.testing.assert_allclose(call_kwargs["orientation"], _Z_NEG_90_QUAT)
+    expected_position, expected_orientation = compute_insertion_hand_pose(
+        current_peg_pos=np.array([-0.092, 0.343, 0.11]),
+        current_peg_orientation=_Z_90_QUAT,
+        current_hand_pos=np.array(
+            [
+                FrankaPegInsertion.HOLE_POSITION[0],
+                FrankaPegInsertion.HOLE_POSITION[1],
+                FrankaPegInsertion.TRANSPORT_HEIGHT,
+            ]
+        ),
+        current_hand_orientation=_IDENTITY_QUAT,
+        desired_peg_pos=np.array(
+            [
+                FrankaPegInsertion.HOLE_POSITION[0],
+                FrankaPegInsertion.HOLE_POSITION[1],
+                _HOLE_TOP_Z + _INSERTION_ALIGNMENT_CLEARANCE + _PEG_HEIGHT / 2,
+            ]
+        ),
+        desired_peg_orientation=desired_peg_orientation,
+    )
+    np.testing.assert_allclose(call_kwargs["position"], expected_position)
+    np.testing.assert_allclose(call_kwargs["orientation"], expected_orientation)
 
 
 # ── reset() tests ─────────────────────────────────────────────────────────────

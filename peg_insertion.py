@@ -15,12 +15,23 @@ _HOLE_TOP_Z = 0.05                  # z of hole fixture top face (m)
 _HOLE_FIXTURE_OUTER_SIZE_X = 0.12
 _HOLE_FIXTURE_OUTER_SIZE_Y = 0.12
 _HOLE_FIXTURE_HEIGHT = 0.05
-_SLOT_INNER_SIZE_X = 0.021
-_SLOT_INNER_SIZE_Y = 0.031
-_SLOT_YAW = 0.0
+_SLOT_INNER_SIZE_X = 0.026
+_SLOT_INNER_SIZE_Y = 0.036
+_SLOT_YAW = np.deg2rad(10.0)  # radians
 _SLOT_BASE_THICKNESS = 0.01
 _SLOT_WALL_THICKNESS_X = (_HOLE_FIXTURE_OUTER_SIZE_X - _SLOT_INNER_SIZE_X) / 2
 _SLOT_WALL_THICKNESS_Y = (_HOLE_FIXTURE_OUTER_SIZE_Y - _SLOT_INNER_SIZE_Y) / 2
+_INSERTION_ALIGNMENT_CLEARANCE = 0.006
+_INSERTION_ALIGNMENT_STEPS = 15
+_INSERTION_FILTER_ALPHA = 0.25
+_INSERTION_ALIGN_XY_GAIN = 0.35
+_INSERTION_DESCENT_XY_GAIN = 0.15
+_INSERTION_ALIGN_MAX_XY_STEP = 0.0015
+_INSERTION_DESCENT_MAX_XY_STEP = 0.0005
+_INSERTION_ALIGN_YAW_GAIN = 0.35
+_INSERTION_DESCENT_YAW_GAIN = 0.12
+_INSERTION_ALIGN_MAX_YAW_STEP = np.deg2rad(2.0)
+_INSERTION_DESCENT_MAX_YAW_STEP = np.deg2rad(0.5)
 _DEFAULT_CAMERA_EYE = np.array([1.2, 1.0, 0.9])
 _DEFAULT_CAMERA_TARGET = np.array([0.15, 0.1, 0.2])
 
@@ -63,6 +74,46 @@ def _rotate_vector(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
         _quaternion_conjugate(quaternion),
     )
     return rotated[1:]
+
+
+def _rotate_xy(yaw: float, offset_xy: np.ndarray) -> np.ndarray:
+    offset_xy = np.asarray(offset_xy, dtype=float)
+    cos_yaw = float(np.cos(yaw))
+    sin_yaw = float(np.sin(yaw))
+    return np.array(
+        [
+            cos_yaw * offset_xy[0] - sin_yaw * offset_xy[1],
+            sin_yaw * offset_xy[0] + cos_yaw * offset_xy[1],
+        ],
+        dtype=float,
+    )
+
+
+def _wrap_to_pi(angle: float) -> float:
+    return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _yaw_from_quaternion(quaternion: np.ndarray) -> float:
+    w, x, y, z = _normalize_quaternion(quaternion)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return float(np.arctan2(siny_cosp, cosy_cosp))
+
+
+def _blend_quaternions(start: np.ndarray, end: np.ndarray, alpha: float) -> np.ndarray:
+    start = _normalize_quaternion(start)
+    end = _normalize_quaternion(end)
+    if np.dot(start, end) < 0.0:
+        end = -end
+    return _normalize_quaternion((1.0 - alpha) * start + alpha * end)
+
+
+def _limit_xy_step(delta_xy: np.ndarray, max_step: float) -> np.ndarray:
+    delta_xy = np.asarray(delta_xy, dtype=float)
+    delta_norm = float(np.linalg.norm(delta_xy))
+    if delta_norm <= max_step or delta_norm == 0.0:
+        return delta_xy
+    return delta_xy * (max_step / delta_norm)
 
 
 def validate_slot_fit(peg_xy: np.ndarray, slot_xy: np.ndarray, atol: float = 1e-6) -> None:
@@ -172,42 +223,52 @@ def build_hole_fixture_parts(hole_top_center: np.ndarray, root_path: str) -> lis
     """Return the base and walls for an open-top slot fixture."""
     hole_x = float(hole_top_center[0])
     hole_y = float(hole_top_center[1])
+    slot_orientation = quaternion_from_z_yaw(_SLOT_YAW)
     fixture_bottom_z = float(hole_top_center[2]) - _HOLE_FIXTURE_HEIGHT
     wall_height = _HOLE_FIXTURE_HEIGHT - _SLOT_BASE_THICKNESS
     base_center_z = fixture_bottom_z + _SLOT_BASE_THICKNESS / 2
     wall_center_z = fixture_bottom_z + _SLOT_BASE_THICKNESS + wall_height / 2
     x_wall_offset = _SLOT_INNER_SIZE_X / 2 + _SLOT_WALL_THICKNESS_X / 2
     y_wall_offset = _SLOT_INNER_SIZE_Y / 2 + _SLOT_WALL_THICKNESS_Y / 2
+    front_offset_xy = _rotate_xy(_SLOT_YAW, np.array([0.0, y_wall_offset], dtype=float))
+    back_offset_xy = _rotate_xy(_SLOT_YAW, np.array([0.0, -y_wall_offset], dtype=float))
+    left_offset_xy = _rotate_xy(_SLOT_YAW, np.array([-x_wall_offset, 0.0], dtype=float))
+    right_offset_xy = _rotate_xy(_SLOT_YAW, np.array([x_wall_offset, 0.0], dtype=float))
 
     return [
         {
             "name": "base",
             "path": f"{root_path}/base",
             "position": np.array([hole_x, hole_y, base_center_z]),
+            "orientation": slot_orientation,
             "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE_X, _HOLE_FIXTURE_OUTER_SIZE_Y, _SLOT_BASE_THICKNESS]),
         },
         {
             "name": "front_wall",
             "path": f"{root_path}/front_wall",
-            "position": np.array([hole_x, hole_y + y_wall_offset, wall_center_z]),
+            "position": np.array([hole_x + front_offset_xy[0], hole_y + front_offset_xy[1], wall_center_z]),
+            "orientation": slot_orientation,
             "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, wall_height]),
         },
         {
             "name": "back_wall",
             "path": f"{root_path}/back_wall",
-            "position": np.array([hole_x, hole_y - y_wall_offset, wall_center_z]),
+            "position": np.array([hole_x + back_offset_xy[0], hole_y + back_offset_xy[1], wall_center_z]),
+            "orientation": slot_orientation,
             "scale": np.array([_HOLE_FIXTURE_OUTER_SIZE_X, _SLOT_WALL_THICKNESS_Y, wall_height]),
         },
         {
             "name": "left_wall",
             "path": f"{root_path}/left_wall",
-            "position": np.array([hole_x - x_wall_offset, hole_y, wall_center_z]),
+            "position": np.array([hole_x + left_offset_xy[0], hole_y + left_offset_xy[1], wall_center_z]),
+            "orientation": slot_orientation,
             "scale": np.array([_SLOT_WALL_THICKNESS_X, _SLOT_INNER_SIZE_Y, wall_height]),
         },
         {
             "name": "right_wall",
             "path": f"{root_path}/right_wall",
-            "position": np.array([hole_x + x_wall_offset, hole_y, wall_center_z]),
+            "position": np.array([hole_x + right_offset_xy[0], hole_y + right_offset_xy[1], wall_center_z]),
+            "orientation": slot_orientation,
             "scale": np.array([_SLOT_WALL_THICKNESS_X, _SLOT_INNER_SIZE_Y, wall_height]),
         },
     ]
@@ -242,6 +303,12 @@ class FrankaPegInsertion:
         self._insert_target_orientation: np.ndarray | None = None
         self._insert_target_peg_orientation: np.ndarray | None = None
         self._insert_start_z: float | None = None
+        self._insert_alignment_hand_z: float | None = None
+        self._insert_final_hand_z: float | None = None
+        self._insert_filtered_peg_pos: np.ndarray | None = None
+        self._insert_filtered_peg_orientation: np.ndarray | None = None
+        self._insert_command_position: np.ndarray | None = None
+        self._insert_command_orientation: np.ndarray | None = None
         self._previous_insert_peg_pos: np.ndarray | None = None
         self._previous_insert_orientation_error_deg: float | None = None
         self.robot = None   # Franka — set by setup_scene()
@@ -346,7 +413,7 @@ class FrankaPegInsertion:
             hole_part = Cube(
                 paths=part["path"],
                 positions=part["position"],
-                orientations=np.array([1.0, 0.0, 0.0, 0.0]),
+                orientations=part["orientation"],
                 sizes=1.0,
                 scales=part["scale"],
                 colors="gray",
@@ -402,54 +469,105 @@ class FrankaPegInsertion:
                 ik_method=ik_method,
             )
         elif self._event == 6:
-            if self._previous_insert_peg_pos is None:
-                self._previous_insert_peg_pos = np.asarray(peg_pos, dtype=float).copy()
-            if self._previous_insert_orientation_error_deg is None:
-                target_peg_orientation = choose_slot_aligned_insertion_orientation(
-                    slot_yaw=_SLOT_YAW,
-                    peg_xy=np.array([_PEG_SIZE_X, _PEG_SIZE_Y], dtype=float),
-                    slot_xy=np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y], dtype=float),
-                )
-                self._insert_target_peg_orientation = target_peg_orientation
-                self._previous_insert_orientation_error_deg = compute_quaternion_angle_error_deg(
-                    peg_orientation,
-                    target_peg_orientation,
-                )
-            desired_peg_pos = np.array(
-                [hole_x, hole_y, _HOLE_TOP_Z - _INSERTION_DEPTH + _PEG_HEIGHT / 2],
-                dtype=float,
-            )
-            current_hand_pos = np.array([hole_x, hole_y, self.TRANSPORT_HEIGHT], dtype=float)
-            current_hand_orientation = goal_orientation
-            if self._step == 0:
+            desired_peg_orientation = self._insert_target_peg_orientation
+            if desired_peg_orientation is None:
                 desired_peg_orientation = choose_slot_aligned_insertion_orientation(
                     slot_yaw=_SLOT_YAW,
                     peg_xy=np.array([_PEG_SIZE_X, _PEG_SIZE_Y], dtype=float),
                     slot_xy=np.array([_SLOT_INNER_SIZE_X, _SLOT_INNER_SIZE_Y], dtype=float),
                 )
                 self._insert_target_peg_orientation = desired_peg_orientation
+
+            if self._insert_filtered_peg_pos is None:
+                self._insert_filtered_peg_pos = np.asarray(peg_pos, dtype=float).copy()
+                self._insert_filtered_peg_orientation = _normalize_quaternion(peg_orientation)
+            else:
+                self._insert_filtered_peg_pos = (
+                    (1.0 - _INSERTION_FILTER_ALPHA) * self._insert_filtered_peg_pos
+                    + _INSERTION_FILTER_ALPHA * np.asarray(peg_pos, dtype=float)
+                )
+                self._insert_filtered_peg_orientation = _blend_quaternions(
+                    self._insert_filtered_peg_orientation,
+                    peg_orientation,
+                    _INSERTION_FILTER_ALPHA,
+                )
+
+            desired_alignment_peg_pos = np.array(
+                [hole_x, hole_y, _HOLE_TOP_Z + _INSERTION_ALIGNMENT_CLEARANCE + _PEG_HEIGHT / 2],
+                dtype=float,
+            )
+            desired_final_peg_pos = np.array(
+                [hole_x, hole_y, _HOLE_TOP_Z - _INSERTION_DEPTH + _PEG_HEIGHT / 2],
+                dtype=float,
+            )
+            initial_hand_pos = np.array([hole_x, hole_y, self.TRANSPORT_HEIGHT], dtype=float)
+            initial_hand_orientation = goal_orientation
+
+            if self._step == 0:
                 (
-                    self._insert_target_position,
-                    self._insert_target_orientation,
+                    self._insert_command_position,
+                    self._insert_command_orientation,
                 ) = compute_insertion_hand_pose(
-                    current_peg_pos=peg_pos,
-                    current_peg_orientation=peg_orientation,
-                    current_hand_pos=current_hand_pos,
-                    current_hand_orientation=current_hand_orientation,
-                    desired_peg_pos=desired_peg_pos,
+                    current_peg_pos=self._insert_filtered_peg_pos,
+                    current_peg_orientation=self._insert_filtered_peg_orientation,
+                    current_hand_pos=initial_hand_pos,
+                    current_hand_orientation=initial_hand_orientation,
+                    desired_peg_pos=desired_alignment_peg_pos,
                     desired_peg_orientation=desired_peg_orientation,
                 )
-                self._insert_start_z = float(current_hand_pos[2])
+                final_hand_position, _ = compute_insertion_hand_pose(
+                    current_peg_pos=self._insert_filtered_peg_pos,
+                    current_peg_orientation=self._insert_filtered_peg_orientation,
+                    current_hand_pos=initial_hand_pos,
+                    current_hand_orientation=initial_hand_orientation,
+                    desired_peg_pos=desired_final_peg_pos,
+                    desired_peg_orientation=desired_peg_orientation,
+                )
+                self._insert_alignment_hand_z = float(self._insert_command_position[2])
+                self._insert_final_hand_z = float(final_hand_position[2])
+            else:
+                if self._step < _INSERTION_ALIGNMENT_STEPS:
+                    xy_gain = _INSERTION_ALIGN_XY_GAIN
+                    max_xy_step = _INSERTION_ALIGN_MAX_XY_STEP
+                    yaw_gain = _INSERTION_ALIGN_YAW_GAIN
+                    max_yaw_step = _INSERTION_ALIGN_MAX_YAW_STEP
+                    command_z = float(self._insert_alignment_hand_z)
+                else:
+                    xy_gain = _INSERTION_DESCENT_XY_GAIN
+                    max_xy_step = _INSERTION_DESCENT_MAX_XY_STEP
+                    yaw_gain = _INSERTION_DESCENT_YAW_GAIN
+                    max_yaw_step = _INSERTION_DESCENT_MAX_YAW_STEP
+                    descent_steps = max(1, self.EVENTS_DT[6] - _INSERTION_ALIGNMENT_STEPS)
+                    descent_progress = min(
+                        1.0,
+                        (self._step - _INSERTION_ALIGNMENT_STEPS + 1) / descent_steps,
+                    )
+                    command_z = float(
+                        self._insert_alignment_hand_z
+                        + descent_progress * (self._insert_final_hand_z - self._insert_alignment_hand_z)
+                    )
 
-            z_progress = (self._step + 1) / self.EVENTS_DT[6]
-            command_position = self._insert_target_position.copy()
-            command_position[2] = (
-                self._insert_start_z
-                + z_progress * (float(self._insert_target_position[2]) - self._insert_start_z)
-            )
+                peg_xy_error = np.array([hole_x, hole_y], dtype=float) - self._insert_filtered_peg_pos[:2]
+                xy_correction = _limit_xy_step(xy_gain * peg_xy_error, max_xy_step)
+                self._insert_command_position[:2] = self._insert_command_position[:2] + xy_correction
+                self._insert_command_position[2] = command_z
+
+                target_peg_yaw = _yaw_from_quaternion(desired_peg_orientation)
+                filtered_peg_yaw = _yaw_from_quaternion(self._insert_filtered_peg_orientation)
+                yaw_error = _wrap_to_pi(target_peg_yaw - filtered_peg_yaw)
+                yaw_correction = float(np.clip(yaw_gain * yaw_error, -max_yaw_step, max_yaw_step))
+                self._insert_command_orientation = _normalize_quaternion(
+                    _quaternion_multiply(
+                        quaternion_from_z_yaw(yaw_correction),
+                        self._insert_command_orientation,
+                    )
+                )
+
+            self._insert_target_position = np.asarray(self._insert_command_position, dtype=float).copy()
+            self._insert_target_orientation = _normalize_quaternion(self._insert_command_orientation)
             self._log_insertion_state(peg_pos, peg_orientation)
             self._command_hand_pose(
-                position=command_position,
+                position=self._insert_target_position,
                 orientation=self._insert_target_orientation,
                 ik_method=ik_method,
             )
@@ -478,6 +596,12 @@ class FrankaPegInsertion:
         self._insert_target_orientation = None
         self._insert_target_peg_orientation = None
         self._insert_start_z = None
+        self._insert_alignment_hand_z = None
+        self._insert_final_hand_z = None
+        self._insert_filtered_peg_pos = None
+        self._insert_filtered_peg_orientation = None
+        self._insert_command_position = None
+        self._insert_command_orientation = None
         self._previous_insert_peg_pos = None
         self._previous_insert_orientation_error_deg = None
         self.robot.reset_to_default_pose()
